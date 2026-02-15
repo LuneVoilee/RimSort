@@ -162,7 +162,18 @@ class ModInfoPanel:
                 self.preview_picture.size(), Qt.AspectRatioMode.KeepAspectRatio
             )
         )
-        self.mod_info_name_label = QLabel(self.tr("Name:"))
+        self.mod_info_name_label_default = self.tr("Name:")
+        self.mod_info_package_id_label_default = self.tr("PackageID:")
+        self.mod_info_author_label_default = self.tr("Authors:")
+        self.mod_info_mod_version_label_default = self.tr("Mod Version:")
+        self.mod_info_supported_versions_label_default = self.tr("Supported Version:")
+        self.mod_info_folder_size_label_default = self.tr("Folder Size:")
+        self.mod_info_path_label_default = self.tr("Path:")
+        self.mod_info_last_touched_label_default = self.tr("Last Touched:")
+        self.mod_info_filesystem_time_label_default = self.tr("Filesystem Modified:")
+        self.mod_info_external_times_label_default = self.tr("Workshop Times:")
+
+        self.mod_info_name_label = QLabel(self.mod_info_name_label_default)
         self.mod_info_name_label.setObjectName("summaryLabel")
         self.mod_info_name_value = QLabel()
         self.mod_info_name_value.setObjectName("summaryValue")
@@ -177,7 +188,7 @@ class ModInfoPanel:
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.scenario_info_summary_value.setWordWrap(True)
-        self.mod_info_package_id_label = QLabel(self.tr("PackageID:"))
+        self.mod_info_package_id_label = QLabel(self.mod_info_package_id_label_default)
         self.mod_info_package_id_label.setObjectName("summaryLabel")
         self.mod_info_package_id_value = QLabel()
         self.mod_info_package_id_value.setObjectName("summaryValue")
@@ -185,7 +196,7 @@ class ModInfoPanel:
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.mod_info_package_id_value.setWordWrap(True)
-        self.mod_info_author_label = QLabel(self.tr("Authors:"))
+        self.mod_info_author_label = QLabel(self.mod_info_author_label_default)
         self.mod_info_author_label.setObjectName("summaryLabel")
         self.mod_info_author_value = QLabel()
         self.mod_info_author_value.setObjectName("summaryValue")
@@ -193,7 +204,7 @@ class ModInfoPanel:
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.mod_info_author_value.setWordWrap(True)
-        self.mod_info_mod_version_label = QLabel(self.tr("Mod Version:"))
+        self.mod_info_mod_version_label = QLabel(self.mod_info_mod_version_label_default)
         self.mod_info_mod_version_label.setObjectName("summaryLabel")
         self.mod_info_mod_version_value = QLabel()
         self.mod_info_mod_version_value.setObjectName("summaryValue")
@@ -201,15 +212,17 @@ class ModInfoPanel:
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.mod_info_mod_version_value.setWordWrap(True)
-        self.mod_info_supported_versions_label = QLabel(self.tr("Supported Version:"))
+        self.mod_info_supported_versions_label = QLabel(
+            self.mod_info_supported_versions_label_default
+        )
         self.mod_info_supported_versions_label.setObjectName("summaryLabel")
         self.mod_info_supported_versions_value = QLabel()
         self.mod_info_supported_versions_value.setObjectName("summaryValue")
-        self.mod_info_folder_size_label = QLabel(self.tr("Folder Size:"))
+        self.mod_info_folder_size_label = QLabel(self.mod_info_folder_size_label_default)
         self.mod_info_folder_size_label.setObjectName("summaryLabel")
         self.mod_info_folder_size_value = QLabel()
         self.mod_info_folder_size_value.setObjectName("summaryValue")
-        self.mod_info_path_label = QLabel(self.tr("Path:"))
+        self.mod_info_path_label = QLabel(self.mod_info_path_label_default)
         self.mod_info_path_label.setObjectName("summaryLabel")
         self.mod_info_path_value = ClickablePathLabel()
         self.mod_info_path_value.setObjectName("summaryValue")
@@ -217,7 +230,7 @@ class ModInfoPanel:
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.mod_info_path_value.setWordWrap(True)
-        self.mod_info_last_touched_label = QLabel(self.tr("Last Touched:"))
+        self.mod_info_last_touched_label = QLabel(self.mod_info_last_touched_label_default)
         self.mod_info_last_touched_label.setObjectName("summaryLabel")
         self.mod_info_last_touched_value = QLabel()
         self.mod_info_last_touched_value.setObjectName("summaryValue")
@@ -225,7 +238,9 @@ class ModInfoPanel:
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.mod_info_last_touched_value.setWordWrap(True)
-        self.mod_info_filesystem_time_label = QLabel(self.tr("Filesystem Modified:"))
+        self.mod_info_filesystem_time_label = QLabel(
+            self.mod_info_filesystem_time_label_default
+        )
         self.mod_info_filesystem_time_label.setObjectName("summaryLabel")
         self.mod_info_filesystem_time_value = QLabel()
         self.mod_info_filesystem_time_value.setObjectName("summaryValue")
@@ -233,7 +248,9 @@ class ModInfoPanel:
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.mod_info_filesystem_time_value.setWordWrap(True)
-        self.mod_info_external_times_label = QLabel(self.tr("Workshop Times:"))
+        self.mod_info_external_times_label = QLabel(
+            self.mod_info_external_times_label_default
+        )
         self.mod_info_external_times_label.setObjectName("summaryLabel")
         self.mod_info_external_times_value = QLabel()
         self.mod_info_external_times_value.setObjectName("summaryValue")
@@ -439,6 +456,86 @@ class ModInfoPanel:
             # Set valid path style (inherits theme color, clickable styling)
             self.mod_info_path_value.setStyleSheet("text-decoration: underline;")
             self.mod_info_path_value.setClickable(True)
+
+    def _reset_mod_labels(self) -> None:
+        self.mod_info_name_label.setText(self.mod_info_name_label_default)
+        self.mod_info_package_id_label.setText(self.mod_info_package_id_label_default)
+        self.mod_info_author_label.setText(self.mod_info_author_label_default)
+        self.mod_info_mod_version_label.setText(self.mod_info_mod_version_label_default)
+        self.mod_info_supported_versions_label.setText(
+            self.mod_info_supported_versions_label_default
+        )
+        self.mod_info_folder_size_label.setText(self.mod_info_folder_size_label_default)
+        self.mod_info_path_label.setText(self.mod_info_path_label_default)
+        self.mod_info_last_touched_label.setText(
+            self.mod_info_last_touched_label_default
+        )
+        self.mod_info_filesystem_time_label.setText(
+            self.mod_info_filesystem_time_label_default
+        )
+        self.mod_info_external_times_label.setText(
+            self.mod_info_external_times_label_default
+        )
+
+    def display_collection_info(
+        self,
+        collection_id: str,
+        name: str,
+        description: str,
+        package_ids: list[str],
+        resolved_count: int,
+        missing_package_ids: list[str],
+        updated_at: str,
+    ) -> None:
+        self._set_widget_styling(False)
+        self._reset_mod_labels()
+
+        self.current_mod_item = None
+        self.notes.blockSignals(True)
+        self.notes.setPlainText("")
+        self.notes.blockSignals(False)
+        self.notes.setVisible(False)
+
+        for widget in self.essential_info_widgets + self.base_mod_info_widgets:
+            if not widget.isVisible():
+                widget.show()
+        for widget in self.scenario_info_widgets:
+            widget.hide()
+
+        self.mod_info_name_value.setText(name or collection_id)
+        self.mod_info_package_id_label.setText(self.tr("Collection ID:"))
+        self.mod_info_package_id_value.setText(collection_id)
+        self.mod_info_author_label.setText(self.tr("Description:"))
+        self.mod_info_author_value.setText(
+            description if description else self.tr("No description")
+        )
+        self.mod_info_mod_version_label.setText(self.tr("Total Mods:"))
+        self.mod_info_mod_version_value.setText(str(len(package_ids)))
+        self.mod_info_supported_versions_label.setText(self.tr("Resolved Mods:"))
+        self.mod_info_supported_versions_value.setText(str(resolved_count))
+        self.mod_info_folder_size_label.setText(self.tr("Missing Mods:"))
+        self.mod_info_folder_size_value.setText(str(len(missing_package_ids)))
+        self.mod_info_path_value.setPath("")
+        self.mod_info_path_value.setClickable(False)
+        self.mod_info_last_touched_label.setText(self.tr("Updated:"))
+        self.mod_info_last_touched_value.setText(updated_at)
+        self.mod_info_filesystem_time_label.setText(self.tr("Game Version:"))
+        self.mod_info_filesystem_time_value.setText(self.metadata_manager.game_version)
+        self.mod_info_external_times_label.setText(self.tr("Missing Package IDs:"))
+        self.mod_info_external_times_value.setText(
+            ", ".join(missing_package_ids[:6]) + ("..." if len(missing_package_ids) > 6 else "")
+            if missing_package_ids
+            else self.tr("None")
+        )
+        self.description.setText(
+            description if description else self.tr("No collection description."),
+            False,
+        )
+        self.preview_picture.setPixmap(
+            QPixmap(self.rimsort_image_b_path).scaled(
+                self.preview_picture.size(), Qt.AspectRatioMode.KeepAspectRatio
+            )
+        )
 
     def _set_mod_version_info(self, mod_metadata: dict[str, Any]) -> None:
         """Set mod version information with error handling."""
@@ -708,6 +805,10 @@ class ModInfoPanel:
 
         :param uuid: UUID of the mod to display
         """
+        self._reset_mod_labels()
+        self.notes.setVisible(True)
+        self.mod_info_path_value.setClickable(True)
+
         mod_metadata = self.metadata_manager.internal_local_metadata.get(uuid, {})
         is_invalid = mod_metadata and mod_metadata.get("invalid")
         is_scenario = mod_metadata and mod_metadata.get("scenario")

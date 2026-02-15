@@ -22,6 +22,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
+from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -38,6 +39,7 @@ import app.utils.metadata as metadata
 import app.views.dialogue as dialogue
 from app.controllers.sort_controller import Sorter
 from app.models.animations import LoadingAnimation
+from app.models.collections import Collection, CollectionStore
 from app.sort.mod_sorting import ModsPanelSortKey
 from app.utils.app_info import AppInfo
 from app.utils.custom_list_widget_item import CustomListWidgetItem
@@ -143,6 +145,9 @@ class MainContent(QObject):
                 self._do_export_list_clipboard
             )
             EventBus().do_export_mod_list_to_rentry.connect(self._do_upload_list_rentry)
+            EventBus().do_export_selected_collection_mod_list.connect(
+                self._do_export_selected_collection_file_xml
+            )
             EventBus().do_upload_log.connect(self._upload_file)
             EventBus().do_open_default_editor.connect(self._open_in_default_editor)
             EventBus().do_download_all_mods_via_steamcmd.connect(
@@ -260,6 +265,10 @@ class MainContent(QObject):
             self.mods_panel = ModsPanel(
                 settings_controller=self.settings_controller,
             )
+            self.collection_store = CollectionStore(self.settings_controller)
+            self.collections: list[Collection] = []
+            self.collection_id_to_data: dict[str, Collection] = {}
+            self.current_collection_id: str | None = None
 
             self.mod_info_container = QWidget()
             self.mod_info_container.setLayout(self.mod_info_panel.panel)
@@ -286,6 +295,15 @@ class MainContent(QObject):
             self.metadata_manager.mod_metadata_updated_signal.connect(
                 self.mods_panel.on_mod_metadata_updated  # Connect MetadataManager to ModPanel for mod metadata updates
             )
+            self.metadata_manager.mod_created_signal.connect(
+                self._on_collection_metadata_changed
+            )
+            self.metadata_manager.mod_deleted_signal.connect(
+                self._on_collection_metadata_changed
+            )
+            self.metadata_manager.mod_metadata_updated_signal.connect(
+                self._on_collection_metadata_changed
+            )
             self.mods_panel.active_mods_list.key_press_signal.connect(
                 self.__handle_active_mod_key_press
             )
@@ -296,6 +314,9 @@ class MainContent(QObject):
                 self.__mod_list_slot
             )
             self.mods_panel.inactive_mods_list.mod_info_signal.connect(
+                self.__mod_list_slot
+            )
+            self.mods_panel.collection_mods_list.mod_info_signal.connect(
                 self.__mod_list_slot
             )
             self.mods_panel.active_mods_list.item_added_signal.connect(
@@ -318,6 +339,50 @@ class MainContent(QObject):
             )
             self.mods_panel.active_mods_list.refresh_signal.connect(self._do_refresh)
             self.mods_panel.inactive_mods_list.refresh_signal.connect(self._do_refresh)
+
+            self.mods_panel.active_mods_list.configure_collections_actions(
+                self._get_collections_for_context_menu,
+                self._add_package_ids_to_collection,
+            )
+            self.mods_panel.inactive_mods_list.configure_collections_actions(
+                self._get_collections_for_context_menu,
+                self._add_package_ids_to_collection,
+            )
+            self.mods_panel.collection_mods_list.configure_collections_actions(
+                self._get_collections_for_context_menu,
+                self._add_package_ids_to_collection,
+            )
+            self.mods_panel.collection_mods_list.configure_external_drop_handler(
+                self._handle_collection_detail_external_drop
+            )
+            self.mods_panel.collection_mods_list.list_update_signal.connect(
+                self._on_collection_detail_list_updated
+            )
+
+            self.mods_panel.collections_panel.create_collection_requested_signal.connect(
+                self._on_collection_create_requested
+            )
+            self.mods_panel.collections_panel.rename_collection_requested_signal.connect(
+                self._on_collection_rename_requested
+            )
+            self.mods_panel.collections_panel.delete_collection_requested_signal.connect(
+                self._on_collection_delete_requested
+            )
+            self.mods_panel.collections_panel.export_collection_requested_signal.connect(
+                self._on_collection_export_requested
+            )
+            self.mods_panel.collections_panel.add_package_ids_to_collection_signal.connect(
+                self._add_package_ids_to_collection
+            )
+            self.mods_panel.collections_panel.collection_selected_signal.connect(
+                self._on_collection_selected
+            )
+            self.mods_panel.collections_panel.collection_open_requested_signal.connect(
+                self._on_collection_open_requested
+            )
+            self.mods_panel.collections_panel.back_to_collection_list_signal.connect(
+                self._on_collection_back_requested
+            )
 
             EventBus().use_this_instead_clicked.connect(self._use_this_instead_clicked)
 
@@ -346,6 +411,8 @@ class MainContent(QObject):
 
             # Progress widget for extraction operations
             self._extract_progress_widget: Optional[TaskProgressWindow] = None
+
+            self._reload_collections()
 
             logger.info("Finished MainContent initialization")
             self.initialized = True
@@ -556,6 +623,13 @@ class MainContent(QObject):
         logger.info(
             f"Finished inserting mod data into active [{len(active_mods_uuids)}] and inactive [{len(inactive_mods_uuids)}] mod lists"
         )
+        if self.current_collection_id:
+            self._show_collection_in_info_panel(self.current_collection_id)
+        if (
+            self.mods_panel.collections_panel.stack.currentWidget()
+            == self.mods_panel.collections_panel.detail_page
+        ):
+            self._refresh_collection_detail_view()
         # Recalculate warnings for both lists
         # self.mods_panel.active_mods_list.recalculate_warnings_signal.emit()
         # self.mods_panel.inactive_mods_list.recalculate_warnings_signal.emit()
@@ -716,6 +790,348 @@ class MainContent(QObject):
             render_unity_rt=self.settings_controller.settings.render_unity_rich_text,
         )
         self.mod_info_panel.show_user_mod_notes(item)
+
+    def _get_collection_by_id(self, collection_id: str) -> Collection | None:
+        return self.collection_id_to_data.get(collection_id)
+
+    def _resolve_collection_package_ids(
+        self, collection: Collection
+    ) -> tuple[list[str], list[str]]:
+        active_map: dict[str, str] = {}
+        inactive_map: dict[str, str] = {}
+
+        for uuid in self.mods_panel.active_mods_list.uuids:
+            package_id = self.metadata_manager.internal_local_metadata.get(uuid, {}).get(
+                "packageid"
+            )
+            if isinstance(package_id, str):
+                normalized = package_id.strip().lower()
+                if normalized and normalized not in active_map:
+                    active_map[normalized] = uuid
+
+        for uuid in self.mods_panel.inactive_mods_list.uuids:
+            package_id = self.metadata_manager.internal_local_metadata.get(uuid, {}).get(
+                "packageid"
+            )
+            if isinstance(package_id, str):
+                normalized = package_id.strip().lower()
+                if normalized and normalized not in inactive_map:
+                    inactive_map[normalized] = uuid
+
+        resolved_uuids: list[str] = []
+        missing_package_ids: list[str] = []
+        for package_id in collection.package_ids:
+            normalized = package_id.strip().lower()
+            resolved_uuid: str | None = active_map.get(normalized)
+            if resolved_uuid is None:
+                resolved_uuid = inactive_map.get(normalized)
+            if resolved_uuid is None:
+                fallback_uuids = self.metadata_manager.packageid_to_uuids.get(normalized)
+                if fallback_uuids:
+                    resolved_uuid = next(iter(fallback_uuids))
+            if resolved_uuid is None:
+                missing_package_ids.append(normalized)
+                continue
+            resolved_uuids.append(resolved_uuid)
+
+        return resolved_uuids, missing_package_ids
+
+    def _show_collection_in_info_panel(self, collection_id: str) -> None:
+        collection = self._get_collection_by_id(collection_id)
+        if collection is None:
+            return
+        resolved_uuids, missing_package_ids = self._resolve_collection_package_ids(
+            collection
+        )
+        self.mod_info_panel.display_collection_info(
+            collection_id=collection.id,
+            name=collection.name,
+            description=collection.description,
+            package_ids=collection.package_ids,
+            resolved_count=len(resolved_uuids),
+            missing_package_ids=missing_package_ids,
+            updated_at=collection.updated_at,
+        )
+
+    def _refresh_collection_detail_view(self) -> None:
+        if self.current_collection_id is None:
+            self.mods_panel.collection_mods_list.recreate_mod_list(
+                list_type="Collection",
+                uuids=[],
+            )
+            return
+
+        collection = self._get_collection_by_id(self.current_collection_id)
+        if collection is None:
+            self.mods_panel.collection_mods_list.recreate_mod_list(
+                list_type="Collection",
+                uuids=[],
+            )
+            return
+
+        self.mods_panel.collections_panel.set_detail_title(collection.name)
+        resolved_uuids, _ = self._resolve_collection_package_ids(collection)
+        self.mods_panel.collection_mods_list.recreate_mod_list(
+            list_type="Collection",
+            uuids=resolved_uuids,
+        )
+
+    def _reload_collections(self, selected_collection_id: str | None = None) -> None:
+        self.collections = self.collection_store.load()
+        self.collection_id_to_data = {entry.id: entry for entry in self.collections}
+
+        target_selected = selected_collection_id or self.current_collection_id
+        if target_selected and target_selected not in self.collection_id_to_data:
+            target_selected = None
+        if target_selected is None and self.collections:
+            target_selected = self.collections[0].id
+
+        self.current_collection_id = target_selected
+        self.mods_panel.collections_panel.set_collections(
+            self.collections, selected_collection_id=target_selected
+        )
+
+        if self.current_collection_id:
+            self._show_collection_in_info_panel(self.current_collection_id)
+            if (
+                self.mods_panel.collections_panel.stack.currentWidget()
+                == self.mods_panel.collections_panel.detail_page
+            ):
+                self._refresh_collection_detail_view()
+        else:
+            self.mods_panel.collections_panel.show_collection_list()
+            self.mods_panel.collection_mods_list.recreate_mod_list(
+                list_type="Collection",
+                uuids=[],
+            )
+
+    def _get_collections_for_context_menu(self) -> list[tuple[str, str]]:
+        return [(entry.id, entry.name) for entry in self.collections]
+
+    def _add_package_ids_to_collection(
+        self, collection_id: str, package_ids: list[str]
+    ) -> None:
+        collections = self.collection_store.add_package_ids(collection_id, package_ids)
+        if collections is None:
+            return
+        self.collections = collections
+        self.collection_id_to_data = {entry.id: entry for entry in collections}
+        self.current_collection_id = collection_id
+        self.mods_panel.collections_panel.set_collections(
+            collections, selected_collection_id=collection_id
+        )
+        self._show_collection_in_info_panel(collection_id)
+        if (
+            self.mods_panel.collections_panel.stack.currentWidget()
+            == self.mods_panel.collections_panel.detail_page
+            and self.current_collection_id == collection_id
+        ):
+            self._refresh_collection_detail_view()
+
+    def _on_collection_create_requested(self) -> None:
+        name, ok = QInputDialog.getText(
+            None,
+            self.tr("Create Collection"),
+            self.tr("Collection name:"),
+        )
+        if not ok:
+            return
+        collections, created = self.collection_store.create_collection(name)
+        if collections is None or created is None:
+            return
+        self.collections = collections
+        self.collection_id_to_data = {entry.id: entry for entry in collections}
+        self.current_collection_id = created.id
+        self.mods_panel.collections_panel.set_collections(
+            collections, selected_collection_id=created.id
+        )
+        self._show_collection_in_info_panel(created.id)
+
+    def _on_collection_rename_requested(self, collection_id: str) -> None:
+        collection = self._get_collection_by_id(collection_id)
+        if collection is None:
+            return
+        new_name, ok = QInputDialog.getText(
+            None,
+            self.tr("Rename Collection"),
+            self.tr("Collection name:"),
+            text=collection.name,
+        )
+        if not ok:
+            return
+        cleaned_name = new_name.strip()
+        if not cleaned_name:
+            return
+        collection.name = cleaned_name
+        collections = self.collection_store.update_collection(collection)
+        if collections is None:
+            return
+        self.collections = collections
+        self.collection_id_to_data = {entry.id: entry for entry in collections}
+        self.current_collection_id = collection_id
+        self.mods_panel.collections_panel.set_collections(
+            collections, selected_collection_id=collection_id
+        )
+        self._show_collection_in_info_panel(collection_id)
+        if (
+            self.mods_panel.collections_panel.stack.currentWidget()
+            == self.mods_panel.collections_panel.detail_page
+        ):
+            self._refresh_collection_detail_view()
+
+    def _on_collection_delete_requested(self, collection_id: str) -> None:
+        collection = self._get_collection_by_id(collection_id)
+        if collection is None:
+            return
+        answer = dialogue.show_dialogue_conditional(
+            title=self.tr("Delete Collection"),
+            text=self.tr('Delete collection "{name}"?').format(name=collection.name),
+            information=self.tr("This action cannot be undone."),
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        collections = self.collection_store.delete_collection(collection_id)
+        if collections is None:
+            return
+        self.collections = collections
+        self.collection_id_to_data = {entry.id: entry for entry in collections}
+        if self.current_collection_id == collection_id:
+            self.current_collection_id = None
+        next_id = self.current_collection_id
+        if next_id is None and collections:
+            next_id = collections[0].id
+        self._reload_collections(selected_collection_id=next_id)
+
+    def _on_collection_selected(self, collection_id: str) -> None:
+        self.current_collection_id = collection_id
+        self._show_collection_in_info_panel(collection_id)
+
+    def _on_collection_metadata_changed(self, uuid: str) -> None:
+        del uuid
+        if not self.current_collection_id:
+            return
+        self._show_collection_in_info_panel(self.current_collection_id)
+        if (
+            self.mods_panel.collections_panel.stack.currentWidget()
+            == self.mods_panel.collections_panel.detail_page
+        ):
+            self._refresh_collection_detail_view()
+
+    def _on_collection_open_requested(self, collection_id: str) -> None:
+        self.current_collection_id = collection_id
+        self.mods_panel.collections_panel.show_collection_detail()
+        self._refresh_collection_detail_view()
+        self._show_collection_in_info_panel(collection_id)
+
+    def _on_collection_back_requested(self) -> None:
+        if self.current_collection_id:
+            self._show_collection_in_info_panel(self.current_collection_id)
+
+    def _handle_collection_detail_external_drop(self, event: QDropEvent) -> bool:
+        if self.current_collection_id is None:
+            return False
+        source = event.source()
+        if source is None or source is self.mods_panel.collection_mods_list:
+            return False
+        if not hasattr(source, "get_selected_package_ids"):
+            return False
+
+        package_ids = source.get_selected_package_ids()
+        if not package_ids:
+            event.ignore()
+            return True
+
+        event.setDropAction(Qt.DropAction.CopyAction)
+        self._add_package_ids_to_collection(self.current_collection_id, package_ids)
+        event.accept()
+        return True
+
+    def _on_collection_detail_list_updated(self, count: str) -> None:
+        if count != "drop" or not self.current_collection_id:
+            return
+        package_ids: list[str] = []
+        seen: set[str] = set()
+        for uuid in self.mods_panel.collection_mods_list.uuids:
+            package_id = self.metadata_manager.internal_local_metadata.get(uuid, {}).get(
+                "packageid"
+            )
+            if not isinstance(package_id, str):
+                continue
+            normalized = package_id.strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            package_ids.append(normalized)
+        collections = self.collection_store.set_package_ids(
+            self.current_collection_id, package_ids
+        )
+        if collections is None:
+            return
+        self.collections = collections
+        self.collection_id_to_data = {entry.id: entry for entry in collections}
+        self.mods_panel.collections_panel.set_collections(
+            collections, selected_collection_id=self.current_collection_id
+        )
+        self._show_collection_in_info_panel(self.current_collection_id)
+
+    def _build_export_package_ids_from_uuids(self, uuids: list[str]) -> list[str]:
+        export_package_ids: list[str] = []
+        for uuid in uuids:
+            package_id = self.metadata_manager.internal_local_metadata.get(uuid, {}).get(
+                "packageid"
+            )
+            if not isinstance(package_id, str):
+                continue
+            if package_id in export_package_ids:
+                logger.critical(
+                    f"Tried to export more than 1 identical package ids to the same mod list. Skipping duplicate {package_id}"
+                )
+                continue
+            if package_id in self.duplicate_mods.keys() and (
+                self.metadata_manager.internal_local_metadata[uuid].get("data_source")
+                == "workshop"
+            ):
+                export_package_ids.append(package_id + "_steam")
+                continue
+            export_package_ids.append(package_id)
+        return export_package_ids
+
+    def _on_collection_export_requested(self, collection_id: str) -> None:
+        collection = self._get_collection_by_id(collection_id)
+        if collection is None:
+            return
+        resolved_uuids, _ = self._resolve_collection_package_ids(collection)
+        package_ids = self._build_export_package_ids_from_uuids(resolved_uuids)
+        if not package_ids:
+            dialogue.show_warning(
+                title=self.tr("Export collection"),
+                text=self.tr("No mods available to export for this collection."),
+            )
+            return
+        file_path = dialogue.show_dialogue_file(
+            mode="save",
+            caption=self.tr("Save collection mod list"),
+            _dir=str(AppInfo().saved_modlists_folder),
+            _filter="XML (*.xml)",
+        )
+        if not file_path:
+            return
+        mods_config_data = generate_rimworld_mods_list(
+            self.metadata_manager.game_version, package_ids
+        )
+        try:
+            if not file_path.endswith(".xml"):
+                json_to_xml_write(mods_config_data, file_path + ".xml")
+            else:
+                json_to_xml_write(mods_config_data, file_path)
+        except Exception:
+            dialogue.show_fatal_error(
+                title=self.tr("Failed to export collection"),
+                text=self.tr("Failed to export collection mods to file:"),
+                information=f"{file_path}",
+                details=traceback.format_exc(),
+            )
 
     def __repopulate_lists(self, is_initial: bool = False) -> None:
         """
@@ -898,6 +1314,7 @@ class MainContent(QObject):
                 loop.exec_()
                 logger.debug("Settings dialog closed. Continuing with refresh...")
 
+        self._reload_collections()
         EventBus().refresh_finished.emit()
 
     def _do_clear(self) -> None:
@@ -1127,29 +1544,9 @@ class MainContent(QObject):
         logger.info(f"Selected path: {file_path}")
         if file_path:
             logger.info("Exporting current active mods to ModsConfig.xml format")
-            active_mods = []
-            for uuid in self.mods_panel.active_mods_list.uuids:
-                package_id = self.metadata_manager.internal_local_metadata[uuid][
-                    "packageid"
-                ]
-                if package_id in active_mods:  # This should NOT be happening
-                    logger.critical(
-                        f"Tried to export more than 1 identical package ids to the same mod list. Skipping duplicate {package_id}"
-                    )
-                    continue
-                else:  # Otherwise, proceed with adding the mod package_id
-                    if (
-                        package_id in self.duplicate_mods.keys()
-                    ):  # Check if mod has duplicates
-                        if (
-                            self.metadata_manager.internal_local_metadata[uuid][
-                                "data_source"
-                            ]
-                            == "workshop"
-                        ):
-                            active_mods.append(package_id + "_steam")
-                            continue  # Append `_steam` suffix if Steam mod, continue to next mod
-                    active_mods.append(package_id)
+            active_mods = self._build_export_package_ids_from_uuids(
+                self.mods_panel.active_mods_list.uuids
+            )
             logger.info(f"Collected {len(active_mods)} active mods for export")
             mods_config_data = generate_rimworld_mods_list(
                 self.metadata_manager.game_version, active_mods
@@ -1171,6 +1568,16 @@ class MainContent(QObject):
                 )
         else:
             logger.debug("USER ACTION: pressed cancel, passing")
+
+    def _do_export_selected_collection_file_xml(self) -> None:
+        selected_collection_id = self.mods_panel.collections_panel.selected_collection_id()
+        if selected_collection_id is None:
+            dialogue.show_warning(
+                title=self.tr("Export collection"),
+                text=self.tr("Please select a collection first."),
+            )
+            return
+        self._on_collection_export_requested(selected_collection_id)
 
     def _do_import_list_rentry(self) -> None:
         """

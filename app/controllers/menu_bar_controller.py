@@ -67,6 +67,9 @@ class MenuBarController(QObject):
         self.menu_bar.export_to_rentry_action.triggered.connect(
             EventBus().do_export_mod_list_to_rentry
         )
+        self.menu_bar.export_selected_collection_action.triggered.connect(
+            EventBus().do_export_selected_collection_mod_list
+        )
 
         for action in self.menu_bar.upload_log_actions:
             action.triggered.connect(

@@ -38,6 +38,7 @@ class MenuBar(QObject):
         self.import_from_save_file_action: QAction
         self.export_to_clipboard_action: QAction
         self.export_to_rentry_action: QAction
+        self.export_selected_collection_action: QAction
         self.upload_log_actions: list[QAction] = []
         self.default_open_log_actions: list[QAction] = []
         self.upload_rimsort_log_action: QAction
@@ -148,6 +149,9 @@ class MenuBar(QObject):
         )
         self.export_to_rentry_action = self._add_action(
             self.export_submenu, self.tr("To Rentry.co…")
+        )
+        self.export_selected_collection_action = self._add_action(
+            self.export_submenu, self.tr("Selected Collection to XML…")
         )
         file_menu.addSeparator()
 

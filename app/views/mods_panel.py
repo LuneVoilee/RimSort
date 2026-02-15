@@ -5,7 +5,7 @@ from functools import partial
 from pathlib import Path
 from shutil import copy2, copytree
 from traceback import format_exc
-from typing import Any, Dict, Optional, cast
+from typing import Any, Callable, Dict, Optional, cast
 
 from loguru import logger
 from platformdirs import PlatformDirs
@@ -90,6 +90,7 @@ from app.utils.generic import (
 )
 from app.utils.metadata import MetadataManager, ModMetadata
 from app.utils.xml import extract_xml_package_ids, fast_rimworld_xml_save_validation
+from app.views.collections_panel import CollectionsPanel
 from app.views.deletion_menu import ModDeletionMenu
 from app.views.dialogue import (
     show_dialogue_conditional,
@@ -856,6 +857,13 @@ class ModListWidget(QListWidget):
             self._get_selected_metadata,
             self.uuids,
         )  # TODO: should we enable items conditionally? For now use all
+        self.get_collections_for_context_menu: (
+            Callable[[], list[tuple[str, str]]] | None
+        ) = None
+        self.add_selected_package_ids_to_collection: (
+            Callable[[str, list[str]], None] | None
+        ) = None
+        self.external_drop_handler: Callable[[QDropEvent], bool] | None = None
         logger.debug("Finished ModListW`idget initialization")
 
     def on_selection_changed(
@@ -889,9 +897,12 @@ class ModListWidget(QListWidget):
         return cast(CustomListWidgetItem, widget)
 
     def dropEvent(self, event: QDropEvent) -> None:
-        super().dropEvent(event)
-        # Get source widget of dropEvent
         source_widget = event.source()
+        if source_widget is not self and self.external_drop_handler is not None:
+            if self.external_drop_handler(event):
+                return
+
+        super().dropEvent(event)
         # Get the drop action
         drop_action = event.dropAction()
         # Check if the drop action is MoveAction
@@ -917,6 +928,23 @@ class ModListWidget(QListWidget):
         if source_widget == self:
             self.list_update_signal.emit("drop")
 
+    def configure_collections_actions(
+        self,
+        get_collections_for_context_menu: Callable[[], list[tuple[str, str]]] | None,
+        add_selected_package_ids_to_collection: (
+            Callable[[str, list[str]], None] | None
+        ),
+    ) -> None:
+        self.get_collections_for_context_menu = get_collections_for_context_menu
+        self.add_selected_package_ids_to_collection = (
+            add_selected_package_ids_to_collection
+        )
+
+    def configure_external_drop_handler(
+        self, handler: Callable[[QDropEvent], bool] | None
+    ) -> None:
+        self.external_drop_handler = handler
+
     def _get_selected_metadata(self) -> list[ModMetadata]:
         selected_items = self.selectedItems()
         metadata: list[ModMetadata] = []
@@ -927,6 +955,32 @@ class ModListWidget(QListWidget):
                     self.metadata_manager.internal_local_metadata[item_data["uuid"]]
                 )
         return metadata
+
+    def get_selected_package_ids(self) -> list[str]:
+        package_ids: list[str] = []
+        seen: set[str] = set()
+        for source_item in self.selectedItems():
+            if type(source_item) is not CustomListWidgetItem:
+                continue
+            item_data = source_item.data(Qt.ItemDataRole.UserRole)
+            uuid = None
+            if isinstance(item_data, dict):
+                uuid = item_data.get("uuid")
+            else:
+                uuid = getattr(item_data, "uuid", None)
+            if not isinstance(uuid, str):
+                continue
+            package_id = self.metadata_manager.internal_local_metadata.get(
+                uuid, {}
+            ).get("packageid")
+            if not isinstance(package_id, str):
+                continue
+            normalized = package_id.strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            package_ids.append(normalized)
+        return package_ids
 
     def eventFilter(self, object: QObject, event: QEvent) -> bool:
         """
@@ -1019,8 +1073,11 @@ class ModListWidget(QListWidget):
             all_warnings_toggled = False
             # Get all selected CustomListWidgetItems
             selected_items = self.selectedItems()
+            selected_package_ids = self.get_selected_package_ids()
             # Track all uuids selected
             all_selected_uuids: Dict[int, str] = {}
+            add_to_collection_menu = None
+            add_to_collection_actions: dict[QAction, str] = {}
             # Single item selected
             if len(selected_items) == 1:
                 logger.debug(f"{len(selected_items)} items selected")
@@ -1313,6 +1370,19 @@ class ModListWidget(QListWidget):
                 context_menu.addAction(open_mod_steam_action)
             if toggle_warning_action:
                 context_menu.addAction(toggle_warning_action)
+            if (
+                selected_package_ids
+                and self.get_collections_for_context_menu
+                and self.add_selected_package_ids_to_collection
+            ):
+                collections = self.get_collections_for_context_menu()
+                if collections:
+                    add_to_collection_menu = QMenu(title=self.tr("Add to collection"))
+                    for collection_id, collection_name in collections:
+                        action = QAction(collection_name)
+                        add_to_collection_menu.addAction(action)
+                        add_to_collection_actions[action] = collection_id
+                    context_menu.addMenu(add_to_collection_menu)
 
             context_menu.addMenu(self.deletion_sub_menu)
             context_menu.addSeparator()
@@ -1375,6 +1445,15 @@ class ModListWidget(QListWidget):
             # Execute QMenu and return it's ACTION
             action = context_menu.exec_(self.mapToGlobal(pos_local))
             if action:  # Handle the action for all selected items
+                if (
+                    action in add_to_collection_actions
+                    and self.add_selected_package_ids_to_collection
+                ):
+                    collection_id = add_to_collection_actions[action]
+                    self.add_selected_package_ids_to_collection(
+                        collection_id, selected_package_ids
+                    )
+                    return True
                 if (  # ACTION: Update git mod(s)
                     action == re_git_action and len(git_paths) > 0
                 ):
@@ -2935,14 +3014,19 @@ class ModsPanel(QWidget):
         self.lists_splitter.setHandleWidth(4)
         self.active_panel = QVBoxLayout()
         self.inactive_panel = QVBoxLayout()
+        self.collections_panel_layout = QVBoxLayout()
         self.inactive_container = QWidget()
         self.inactive_container.setLayout(self.inactive_panel)
         self.active_container = QWidget()
         self.active_container.setLayout(self.active_panel)
+        self.collections_container = QWidget()
+        self.collections_container.setLayout(self.collections_panel_layout)
         self.lists_splitter.addWidget(self.inactive_container)
         self.lists_splitter.addWidget(self.active_container)
+        self.lists_splitter.addWidget(self.collections_container)
         self.lists_splitter.setStretchFactor(0, 1)
         self.lists_splitter.setStretchFactor(1, 1)
+        self.lists_splitter.setStretchFactor(2, 1)
         self.panel.addWidget(self.lists_splitter, 1)
 
         # Create the buttons layout
@@ -3049,6 +3133,15 @@ class ModsPanel(QWidget):
         self.inactive_panel.addWidget(self.inactive_mods_label)
         self.inactive_panel.addLayout(self.inactive_mods_search_layout)
         self.inactive_panel.addWidget(self.inactive_mods_list)
+
+        # Collections panel widgets
+        self.collections_panel = CollectionsPanel()
+        self.collection_mods_list = ModListWidget(
+            list_type="Collection",
+            settings_controller=self.settings_controller,
+        )
+        self.collections_panel.attach_detail_widget(self.collection_mods_list)
+        self.collections_panel_layout.addWidget(self.collections_panel)
 
         # Connect signals and slots
         self.connect_signals()

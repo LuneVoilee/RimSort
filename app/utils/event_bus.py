@@ -32,6 +32,7 @@ class EventBus(QObject):
     do_import_mod_list_from_save_file = Signal()
     do_export_mod_list_to_clipboard = Signal()
     do_export_mod_list_to_rentry = Signal()
+    do_export_selected_collection_mod_list = Signal()
 
     # Shortcuts submenu signals
     do_open_app_directory = Signal()
