@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,8 @@ from loguru import logger
 from app.controllers.instance_controller import InstanceController
 from app.controllers.settings_controller import SettingsController
 
+DEFAULT_COLLECTION_COLOR = "#00007f"
+BACKGROUND_COLOR = "#101820"
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -21,22 +24,37 @@ def _normalize_package_id(package_id: str) -> str:
     return package_id.strip().lower()
 
 
+def _normalize_collection_color(color: Any) -> str:
+    if not isinstance(color, str):
+        return DEFAULT_COLLECTION_COLOR
+    normalized = color.strip().lower()
+    if re.fullmatch(r"#[0-9a-f]{6}", normalized):
+        return normalized
+    return DEFAULT_COLLECTION_COLOR
+
+
 @dataclass
 class Collection:
     id: str
     name: str
     description: str = ""
+    color: str = DEFAULT_COLLECTION_COLOR
     package_ids: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_utc_now_iso)
     updated_at: str = field(default_factory=_utc_now_iso)
 
     @staticmethod
-    def create(name: str, description: str = "") -> "Collection":
+    def create(
+            name: str,
+            description: str = "",
+            color: str = DEFAULT_COLLECTION_COLOR,
+    ) -> "Collection":
         now = _utc_now_iso()
         return Collection(
             id=uuid4().hex,
             name=name.strip(),
             description=description.strip(),
+            color=_normalize_collection_color(color),
             created_at=now,
             updated_at=now,
         )
@@ -58,6 +76,7 @@ class Collection:
             id=str(raw.get("id", uuid4().hex)),
             name=str(raw.get("name", "Untitled Collection")).strip(),
             description=str(raw.get("description", "")).strip(),
+            color=_normalize_collection_color(raw.get("color", DEFAULT_COLLECTION_COLOR)),
             package_ids=package_ids,
             created_at=str(raw.get("created_at", _utc_now_iso())),
             updated_at=str(raw.get("updated_at", _utc_now_iso())),
@@ -115,13 +134,16 @@ class CollectionStore:
             return False
 
     def create_collection(
-        self, name: str, description: str = ""
+            self,
+            name: str,
+            description: str = "",
+            color: str = DEFAULT_COLLECTION_COLOR,
     ) -> tuple[list[Collection], Collection] | tuple[None, None]:
         cleaned = name.strip()
         if not cleaned:
             return None, None
         collections = self.load()
-        new_collection = Collection.create(cleaned, description)
+        new_collection = Collection.create(cleaned, description, color=color)
         collections.append(new_collection)
         if not self.save(collections):
             return None, None
@@ -132,6 +154,9 @@ class CollectionStore:
         replaced = False
         for index, collection in enumerate(collections):
             if collection.id == updated.id:
+                updated.name = updated.name.strip()
+                updated.description = updated.description.strip()
+                updated.color = _normalize_collection_color(updated.color)
                 updated.updated_at = _utc_now_iso()
                 collections[index] = updated
                 replaced = True
@@ -167,6 +192,28 @@ class CollectionStore:
                 if package_id not in seen:
                     seen.add(package_id)
                     collection.package_ids.append(package_id)
+            collection.updated_at = _utc_now_iso()
+            if not self.save(collections):
+                return None
+            return collections
+        return None
+
+    def remove_package_ids(
+            self, collection_id: str, package_ids: list[str]
+    ) -> list[Collection] | None:
+        incoming = {_normalize_package_id(pid) for pid in package_ids if pid.strip()}
+        if not incoming:
+            return None
+
+        collections = self.load()
+        for collection in collections:
+            if collection.id != collection_id:
+                continue
+            collection.package_ids = [
+                package_id
+                for package_id in collection.package_ids
+                if package_id not in incoming
+            ]
             collection.updated_at = _utc_now_iso()
             if not self.save(collections):
                 return None

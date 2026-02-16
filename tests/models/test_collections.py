@@ -28,6 +28,7 @@ def test_collection_store_crud(monkeypatch: object, tmp_path: Path) -> None:
     assert collections is not None
     assert created is not None
     assert created.name == "Test Collection"
+    assert created.color == "#00007f"
 
     updated = store.add_package_ids(created.id, ["A.Mod", "a.mod", "B.Mod"])
     assert updated is not None
@@ -38,6 +39,11 @@ def test_collection_store_crud(monkeypatch: object, tmp_path: Path) -> None:
     assert reordered is not None
     modified = next(entry for entry in reordered if entry.id == created.id)
     assert modified.package_ids == ["b.mod", "a.mod"]
+
+    trimmed = store.remove_package_ids(created.id, ["a.mod"])
+    assert trimmed is not None
+    modified = next(entry for entry in trimmed if entry.id == created.id)
+    assert modified.package_ids == ["b.mod"]
 
     remaining = store.delete_collection(created.id)
     assert remaining == []

@@ -863,6 +863,9 @@ class ModListWidget(QListWidget):
         self.add_selected_package_ids_to_collection: (
             Callable[[str, list[str]], None] | None
         ) = None
+        self.remove_selected_package_ids_from_collection: (
+            Callable[[str, list[str]], None] | None
+        ) = None
         self.external_drop_handler: Callable[[QDropEvent], bool] | None = None
         logger.debug("Finished ModListW`idget initialization")
 
@@ -934,10 +937,16 @@ class ModListWidget(QListWidget):
         add_selected_package_ids_to_collection: (
             Callable[[str, list[str]], None] | None
         ),
+        remove_selected_package_ids_from_collection: (
+            Callable[[str, list[str]], None] | None
+        ),
     ) -> None:
         self.get_collections_for_context_menu = get_collections_for_context_menu
         self.add_selected_package_ids_to_collection = (
             add_selected_package_ids_to_collection
+        )
+        self.remove_selected_package_ids_from_collection = (
+            remove_selected_package_ids_from_collection
         )
 
     def configure_external_drop_handler(
@@ -1078,6 +1087,8 @@ class ModListWidget(QListWidget):
             all_selected_uuids: Dict[int, str] = {}
             add_to_collection_menu = None
             add_to_collection_actions: dict[QAction, str] = {}
+            remove_from_collection_menu = None
+            remove_from_collection_actions: dict[QAction, str] = {}
             # Single item selected
             if len(selected_items) == 1:
                 logger.debug(f"{len(selected_items)} items selected")
@@ -1383,6 +1394,15 @@ class ModListWidget(QListWidget):
                         add_to_collection_menu.addAction(action)
                         add_to_collection_actions[action] = collection_id
                     context_menu.addMenu(add_to_collection_menu)
+                    if self.remove_selected_package_ids_from_collection:
+                        remove_from_collection_menu = QMenu(
+                            title=self.tr("Remove from collection")
+                        )
+                        for collection_id, collection_name in collections:
+                            action = QAction(collection_name)
+                            remove_from_collection_menu.addAction(action)
+                            remove_from_collection_actions[action] = collection_id
+                        context_menu.addMenu(remove_from_collection_menu)
 
             context_menu.addMenu(self.deletion_sub_menu)
             context_menu.addSeparator()
@@ -1451,6 +1471,15 @@ class ModListWidget(QListWidget):
                 ):
                     collection_id = add_to_collection_actions[action]
                     self.add_selected_package_ids_to_collection(
+                        collection_id, selected_package_ids
+                    )
+                    return True
+                if (
+                    action in remove_from_collection_actions
+                    and self.remove_selected_package_ids_from_collection
+                ):
+                    collection_id = remove_from_collection_actions[action]
+                    self.remove_selected_package_ids_from_collection(
                         collection_id, selected_package_ids
                     )
                     return True

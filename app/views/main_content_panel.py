@@ -13,7 +13,6 @@ from typing import Any, Callable, Literal, Optional, cast, overload
 from urllib.parse import urlparse
 
 import requests
-from loguru import logger
 from PySide6.QtCore import (
     QEventLoop,
     QObject,
@@ -22,7 +21,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QDropEvent
+from PySide6.QtGui import QColor, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -33,13 +32,18 @@ from PySide6.QtWidgets import (
     QSplitter,
     QWidget,
 )
+from loguru import logger
 
 import app.utils.constants as app_constants
 import app.utils.metadata as metadata
 import app.views.dialogue as dialogue
 from app.controllers.sort_controller import Sorter
 from app.models.animations import LoadingAnimation
-from app.models.collections import Collection, CollectionStore
+from app.models.collections import (
+    DEFAULT_COLLECTION_COLOR,
+    Collection,
+    CollectionStore, BACKGROUND_COLOR,
+)
 from app.sort.mod_sorting import ModsPanelSortKey
 from app.utils.app_info import AppInfo
 from app.utils.custom_list_widget_item import CustomListWidgetItem
@@ -77,6 +81,7 @@ from app.utils.zip_extractor import (
     ZipExtractThread,
     get_zip_contents,
 )
+from app.views.collection_edit_dialog import CollectionEditDialog
 from app.views.mod_info_panel import ModInfoPanel
 from app.views.mods_panel import (
     ModListWidget,
@@ -343,14 +348,23 @@ class MainContent(QObject):
             self.mods_panel.active_mods_list.configure_collections_actions(
                 self._get_collections_for_context_menu,
                 self._add_package_ids_to_collection,
+                self._remove_package_ids_from_collection,
             )
             self.mods_panel.inactive_mods_list.configure_collections_actions(
                 self._get_collections_for_context_menu,
                 self._add_package_ids_to_collection,
+                self._remove_package_ids_from_collection,
             )
             self.mods_panel.collection_mods_list.configure_collections_actions(
                 self._get_collections_for_context_menu,
                 self._add_package_ids_to_collection,
+                self._remove_package_ids_from_collection,
+            )
+            self.mods_panel.active_mods_list.configure_external_drop_handler(
+                self._handle_active_list_external_drop
+            )
+            self.mods_panel.inactive_mods_list.configure_external_drop_handler(
+                self._handle_inactive_list_external_drop
             )
             self.mods_panel.collection_mods_list.configure_external_drop_handler(
                 self._handle_collection_detail_external_drop
@@ -362,11 +376,17 @@ class MainContent(QObject):
             self.mods_panel.collections_panel.create_collection_requested_signal.connect(
                 self._on_collection_create_requested
             )
+            self.mods_panel.collections_panel.edit_collection_requested_signal.connect(
+                self._on_collection_edit_requested
+            )
             self.mods_panel.collections_panel.rename_collection_requested_signal.connect(
                 self._on_collection_rename_requested
             )
             self.mods_panel.collections_panel.delete_collection_requested_signal.connect(
                 self._on_collection_delete_requested
+            )
+            self.mods_panel.collections_panel.sort_collection_requested_signal.connect(
+                self._on_collection_sort_requested
             )
             self.mods_panel.collections_panel.export_collection_requested_signal.connect(
                 self._on_collection_export_requested
@@ -908,6 +928,40 @@ class MainContent(QObject):
     def _get_collections_for_context_menu(self) -> list[tuple[str, str]]:
         return [(entry.id, entry.name) for entry in self.collections]
 
+    def _change_mod_color_for_uuid(self, uuid: str, color: QColor) -> None:
+        if uuid in self.mods_panel.active_mods_list.uuids:
+            self.mods_panel.active_mods_list.change_mod_color(uuid, color)
+            return
+        if uuid in self.mods_panel.inactive_mods_list.uuids:
+            self.mods_panel.inactive_mods_list.change_mod_color(uuid, color)
+
+    def _apply_collection_color(
+            self, collection: Collection, package_ids: list[str] | None = None, is_remove: bool = False
+    ) -> None:
+        color = QColor(collection.color)
+        if not color.isValid():
+            color = QColor(DEFAULT_COLLECTION_COLOR)
+        if is_remove:
+            color = QColor(BACKGROUND_COLOR)
+
+        package_filter: set[str] | None = None
+        if package_ids is not None:
+            package_filter = {
+                package_id.strip().lower() for package_id in package_ids if package_id
+            }
+
+        resolved_uuids, _ = self._resolve_collection_package_ids(collection)
+        for uuid in resolved_uuids:
+            if package_filter is not None:
+                package_id = self.metadata_manager.internal_local_metadata.get(
+                    uuid, {}
+                ).get("packageid")
+                if not isinstance(package_id, str):
+                    continue
+                if package_id.strip().lower() not in package_filter:
+                    continue
+            self._change_mod_color_for_uuid(uuid, color)
+
     def _add_package_ids_to_collection(
         self, collection_id: str, package_ids: list[str]
     ) -> None:
@@ -920,7 +974,35 @@ class MainContent(QObject):
         self.mods_panel.collections_panel.set_collections(
             collections, selected_collection_id=collection_id
         )
+        collection = self._get_collection_by_id(collection_id)
+        if collection:
+            self._apply_collection_color(collection, package_ids=package_ids)
         self._show_collection_in_info_panel(collection_id)
+        if (
+                self.mods_panel.collections_panel.stack.currentWidget()
+                == self.mods_panel.collections_panel.detail_page
+                and self.current_collection_id == collection_id
+        ):
+            self._refresh_collection_detail_view()
+
+    def _remove_package_ids_from_collection(
+            self, collection_id: str, package_ids: list[str]
+    ) -> None:
+        collection = self._get_collection_by_id(collection_id)
+        if collection:
+            self._apply_collection_color(collection, package_ids=package_ids, is_remove=True)
+
+        collections = self.collection_store.remove_package_ids(collection_id, package_ids)
+        if collections is None:
+            return
+        self.collections = collections
+        self.collection_id_to_data = {entry.id: entry for entry in collections}
+        self.current_collection_id = collection_id
+        self.mods_panel.collections_panel.set_collections(
+            collections, selected_collection_id=collection_id
+        )
+        self._show_collection_in_info_panel(collection_id)
+
         if (
             self.mods_panel.collections_panel.stack.currentWidget()
             == self.mods_panel.collections_panel.detail_page
@@ -946,6 +1028,51 @@ class MainContent(QObject):
             collections, selected_collection_id=created.id
         )
         self._show_collection_in_info_panel(created.id)
+
+    def _on_collection_edit_requested(self, collection_id: str) -> None:
+        collection = self._get_collection_by_id(collection_id)
+        if collection is None:
+            return
+
+        dialog = CollectionEditDialog(
+            name=collection.name,
+            description=collection.description,
+            color=collection.color,
+        )
+        if not dialog.exec():
+            return
+
+        edited_name, edited_description, edited_color = dialog.values()
+        if not edited_name:
+            return
+
+        previous_color = collection.color
+        collection.name = edited_name
+        collection.description = edited_description
+        collection.color = edited_color or DEFAULT_COLLECTION_COLOR
+        collections = self.collection_store.update_collection(collection)
+        if collections is None:
+            return
+        self.collections = collections
+        self.collection_id_to_data = {entry.id: entry for entry in collections}
+        self.current_collection_id = collection_id
+        self.mods_panel.collections_panel.set_collections(
+            collections, selected_collection_id=collection_id
+        )
+
+        updated_collection = self._get_collection_by_id(collection_id)
+        if (
+                updated_collection is not None
+                and previous_color.lower() != updated_collection.color.lower()
+        ):
+            self._apply_collection_color(updated_collection)
+
+        self._show_collection_in_info_panel(collection_id)
+        if (
+                self.mods_panel.collections_panel.stack.currentWidget()
+                == self.mods_panel.collections_panel.detail_page
+        ):
+            self._refresh_collection_detail_view()
 
     def _on_collection_rename_requested(self, collection_id: str) -> None:
         collection = self._get_collection_by_id(collection_id)
@@ -1028,10 +1155,113 @@ class MainContent(QObject):
         if self.current_collection_id:
             self._show_collection_in_info_panel(self.current_collection_id)
 
+    def _on_collection_sort_requested(self, collection_id: str) -> None:
+        collection = self._get_collection_by_id(collection_id)
+        if collection is None:
+            return
+
+        resolved_uuids, missing_package_ids = self._resolve_collection_package_ids(
+            collection
+        )
+        sorted_uuids = sorted(
+            resolved_uuids,
+            key=lambda uuid: str(
+                self.metadata_manager.internal_local_metadata.get(uuid, {}).get(
+                    "name", ""
+                )
+            ).lower(),
+        )
+
+        sorted_package_ids: list[str] = []
+        seen: set[str] = set()
+        for uuid in sorted_uuids:
+            package_id = self.metadata_manager.internal_local_metadata.get(uuid, {}).get(
+                "packageid"
+            )
+            if not isinstance(package_id, str):
+                continue
+            normalized = package_id.strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            sorted_package_ids.append(normalized)
+
+        missing_set = {package_id.strip().lower() for package_id in missing_package_ids}
+        for package_id in collection.package_ids:
+            normalized = package_id.strip().lower()
+            if normalized in missing_set and normalized not in seen:
+                seen.add(normalized)
+                sorted_package_ids.append(normalized)
+
+        collections = self.collection_store.set_package_ids(collection_id, sorted_package_ids)
+        if collections is None:
+            return
+        self.collections = collections
+        self.collection_id_to_data = {entry.id: entry for entry in collections}
+        self.current_collection_id = collection_id
+        self.mods_panel.collections_panel.set_collections(
+            collections, selected_collection_id=collection_id
+        )
+        self._show_collection_in_info_panel(collection_id)
+        if (
+                self.mods_panel.collections_panel.stack.currentWidget()
+                == self.mods_panel.collections_panel.detail_page
+        ):
+            self._refresh_collection_detail_view()
+
+    def _activate_collection_mods(self, collection_id: str) -> None:
+        collection = self._get_collection_by_id(collection_id)
+        if collection is None:
+            return
+
+        resolved_uuids, _ = self._resolve_collection_package_ids(collection)
+        if not resolved_uuids:
+            return
+
+        active_uuids = self.mods_panel.active_mods_list.uuids.copy()
+        active_set = set(active_uuids)
+        for uuid in resolved_uuids:
+            if uuid not in active_set:
+                active_uuids.append(uuid)
+                active_set.add(uuid)
+
+        inactive_uuids = [
+            uuid for uuid in self.mods_panel.inactive_mods_list.uuids if uuid not in active_set
+        ]
+        self._insert_data_into_lists(active_uuids, inactive_uuids)
+        # self._apply_collection_color(collection)
+
+    def _handle_active_list_external_drop(self, event: QDropEvent) -> bool:
+        source = event.source()
+        if source is not self.mods_panel.collections_panel.collections_list:
+            return False
+        if not hasattr(source, "get_selected_collection_id"):
+            return False
+
+        collection_id = source.get_selected_collection_id()
+        if not collection_id:
+            event.ignore()
+            return True
+
+        self._activate_collection_mods(collection_id)
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        return True
+
+    def _handle_inactive_list_external_drop(self, event: QDropEvent) -> bool:
+        source = event.source()
+        if source is self.mods_panel.collections_panel.collections_list:
+            event.ignore()
+            return True
+        return False
+
     def _handle_collection_detail_external_drop(self, event: QDropEvent) -> bool:
         if self.current_collection_id is None:
             return False
         source = event.source()
+        if source is self.mods_panel.collections_panel.collections_list:
+            event.ignore()
+            return True
         if source is None or source is self.mods_panel.collection_mods_list:
             return False
         if not hasattr(source, "get_selected_package_ids"):
