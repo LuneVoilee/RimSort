@@ -13,6 +13,7 @@ from typing import Any, Callable, Literal, Optional, cast, overload
 from urllib.parse import urlparse
 
 import requests
+from loguru import logger
 from PySide6.QtCore import (
     QEventLoop,
     QObject,
@@ -32,7 +33,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QWidget,
 )
-from loguru import logger
 
 import app.utils.constants as app_constants
 import app.utils.metadata as metadata
@@ -40,9 +40,12 @@ import app.views.dialogue as dialogue
 from app.controllers.sort_controller import Sorter
 from app.models.animations import LoadingAnimation
 from app.models.collections import (
+    BACKGROUND_COLOR,
+    COLLECTION_COVER_TYPE_FILE,
+    COLLECTION_COVER_TYPE_PACKAGE,
     DEFAULT_COLLECTION_COLOR,
     Collection,
-    CollectionStore, BACKGROUND_COLOR,
+    CollectionStore,
 )
 from app.sort.mod_sorting import ModsPanelSortKey
 from app.utils.app_info import AppInfo
@@ -814,47 +817,155 @@ class MainContent(QObject):
     def _get_collection_by_id(self, collection_id: str) -> Collection | None:
         return self.collection_id_to_data.get(collection_id)
 
-    def _resolve_collection_package_ids(
-        self, collection: Collection
-    ) -> tuple[list[str], list[str]]:
-        active_map: dict[str, str] = {}
-        inactive_map: dict[str, str] = {}
+    def _build_package_id_uuid_lookup(self) -> dict[str, str]:
+        package_lookup: dict[str, str] = {}
 
         for uuid in self.mods_panel.active_mods_list.uuids:
             package_id = self.metadata_manager.internal_local_metadata.get(uuid, {}).get(
                 "packageid"
             )
-            if isinstance(package_id, str):
-                normalized = package_id.strip().lower()
-                if normalized and normalized not in active_map:
-                    active_map[normalized] = uuid
+            if not isinstance(package_id, str):
+                continue
+            normalized = package_id.strip().lower()
+            if normalized and normalized not in package_lookup:
+                package_lookup[normalized] = uuid
 
         for uuid in self.mods_panel.inactive_mods_list.uuids:
             package_id = self.metadata_manager.internal_local_metadata.get(uuid, {}).get(
                 "packageid"
             )
-            if isinstance(package_id, str):
-                normalized = package_id.strip().lower()
-                if normalized and normalized not in inactive_map:
-                    inactive_map[normalized] = uuid
+            if not isinstance(package_id, str):
+                continue
+            normalized = package_id.strip().lower()
+            if normalized and normalized not in package_lookup:
+                package_lookup[normalized] = uuid
 
+        for raw_package_id, fallback_uuids in self.metadata_manager.packageid_to_uuids.items():
+            if not isinstance(raw_package_id, str):
+                continue
+            normalized = raw_package_id.strip().lower()
+            if not normalized or normalized in package_lookup:
+                continue
+            if fallback_uuids:
+                package_lookup[normalized] = next(iter(fallback_uuids))
+
+        return package_lookup
+
+    def _resolve_collection_package_ids(
+        self, collection: Collection
+    ) -> tuple[list[str], list[str]]:
+        package_lookup = self._build_package_id_uuid_lookup()
         resolved_uuids: list[str] = []
         missing_package_ids: list[str] = []
         for package_id in collection.package_ids:
             normalized = package_id.strip().lower()
-            resolved_uuid: str | None = active_map.get(normalized)
-            if resolved_uuid is None:
-                resolved_uuid = inactive_map.get(normalized)
-            if resolved_uuid is None:
-                fallback_uuids = self.metadata_manager.packageid_to_uuids.get(normalized)
-                if fallback_uuids:
-                    resolved_uuid = next(iter(fallback_uuids))
+            resolved_uuid: str | None = package_lookup.get(normalized)
             if resolved_uuid is None:
                 missing_package_ids.append(normalized)
                 continue
             resolved_uuids.append(resolved_uuid)
 
         return resolved_uuids, missing_package_ids
+
+    def _find_mod_preview_image_path(self, mod_path: str) -> str | None:
+        if not mod_path:
+            return None
+        mod_root = Path(mod_path)
+        if not mod_root.exists() or not mod_root.is_dir():
+            return None
+
+        try:
+            about_dir = next(
+                (
+                    path_entry
+                    for path_entry in mod_root.iterdir()
+                    if path_entry.is_dir() and path_entry.name.lower() == "about"
+                ),
+                None,
+            )
+            if about_dir is None:
+                return None
+
+            preview_file = next(
+                (
+                    path_entry
+                    for path_entry in about_dir.iterdir()
+                    if path_entry.is_file() and path_entry.name.lower() == "preview.png"
+                ),
+                None,
+            )
+            if preview_file is None:
+                return None
+            return str(preview_file)
+        except Exception as error:
+            logger.debug(f"Failed to resolve preview image for mod path {mod_path}: {error}")
+            return None
+
+    def _get_preview_image_path_for_uuid(self, uuid: str | None) -> str | None:
+        if uuid is None:
+            return None
+        mod_path = self.metadata_manager.internal_local_metadata.get(uuid, {}).get("path")
+        if not isinstance(mod_path, str):
+            return None
+        return self._find_mod_preview_image_path(mod_path)
+
+    def _resolve_collection_cover_image_path(self, collection: Collection) -> str | None:
+        cover_image_path = collection.cover_image_path.strip()
+        if (
+            collection.cover_type == COLLECTION_COVER_TYPE_FILE
+            and cover_image_path
+            and Path(cover_image_path).is_file()
+        ):
+            return cover_image_path
+
+        package_lookup = self._build_package_id_uuid_lookup()
+        if collection.cover_type == COLLECTION_COVER_TYPE_PACKAGE:
+            normalized_package_id = collection.cover_package_id.strip().lower()
+            if normalized_package_id:
+                preview_path = self._get_preview_image_path_for_uuid(
+                    package_lookup.get(normalized_package_id)
+                )
+                if preview_path:
+                    return preview_path
+
+        for package_id in reversed(collection.package_ids):
+            normalized_package_id = package_id.strip().lower()
+            if not normalized_package_id:
+                continue
+            preview_path = self._get_preview_image_path_for_uuid(
+                package_lookup.get(normalized_package_id)
+            )
+            if preview_path:
+                return preview_path
+
+        return None
+
+    def _build_collection_cover_candidates(
+        self, collection: Collection
+    ) -> list[tuple[str, str]]:
+        package_lookup = self._build_package_id_uuid_lookup()
+        candidates: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for package_id in collection.package_ids:
+            normalized_package_id = package_id.strip().lower()
+            if not normalized_package_id or normalized_package_id in seen:
+                continue
+            preview_path = self._get_preview_image_path_for_uuid(
+                package_lookup.get(normalized_package_id)
+            )
+            if not preview_path:
+                continue
+
+            seen.add(normalized_package_id)
+            mod_metadata = self.metadata_manager.internal_local_metadata.get(
+                package_lookup.get(normalized_package_id), {}
+            )
+            mod_name = mod_metadata.get("name")
+            display_name = normalized_package_id
+            if isinstance(mod_name, str) and mod_name.strip():
+                display_name = f"{mod_name.strip()} ({normalized_package_id})"
+            candidates.append((normalized_package_id, display_name))
+        return candidates
 
     def _show_collection_in_info_panel(self, collection_id: str) -> None:
         collection = self._get_collection_by_id(collection_id)
@@ -863,6 +974,7 @@ class MainContent(QObject):
         resolved_uuids, missing_package_ids = self._resolve_collection_package_ids(
             collection
         )
+        cover_image_path = self._resolve_collection_cover_image_path(collection)
         self.mod_info_panel.display_collection_info(
             collection_id=collection.id,
             name=collection.name,
@@ -871,6 +983,7 @@ class MainContent(QObject):
             resolved_count=len(resolved_uuids),
             missing_package_ids=missing_package_ids,
             updated_at=collection.updated_at,
+            cover_image_path=cover_image_path,
         )
 
     def _refresh_collection_detail_view(self) -> None:
@@ -1034,15 +1147,27 @@ class MainContent(QObject):
         if collection is None:
             return
 
+        cover_candidates = self._build_collection_cover_candidates(collection)
         dialog = CollectionEditDialog(
             name=collection.name,
             description=collection.description,
             color=collection.color,
+            cover_type=collection.cover_type,
+            cover_image_path=collection.cover_image_path,
+            cover_package_id=collection.cover_package_id,
+            cover_candidates=cover_candidates,
         )
         if not dialog.exec():
             return
 
-        edited_name, edited_description, edited_color = dialog.values()
+        (
+            edited_name,
+            edited_description,
+            edited_color,
+            edited_cover_type,
+            edited_cover_image_path,
+            edited_cover_package_id,
+        ) = dialog.values()
         if not edited_name:
             return
 
@@ -1050,6 +1175,9 @@ class MainContent(QObject):
         collection.name = edited_name
         collection.description = edited_description
         collection.color = edited_color or DEFAULT_COLLECTION_COLOR
+        collection.cover_type = edited_cover_type
+        collection.cover_image_path = edited_cover_image_path
+        collection.cover_package_id = edited_cover_package_id
         collections = self.collection_store.update_collection(collection)
         if collections is None:
             return
@@ -1217,42 +1345,128 @@ class MainContent(QObject):
         resolved_uuids, _ = self._resolve_collection_package_ids(collection)
         if not resolved_uuids:
             return
-
-        active_uuids = self.mods_panel.active_mods_list.uuids.copy()
-        active_set = set(active_uuids)
-        for uuid in resolved_uuids:
-            if uuid not in active_set:
-                active_uuids.append(uuid)
-                active_set.add(uuid)
-
-        inactive_uuids = [
-            uuid for uuid in self.mods_panel.inactive_mods_list.uuids if uuid not in active_set
-        ]
-        self._insert_data_into_lists(active_uuids, inactive_uuids)
+        self._move_selected_uuids_to_active(resolved_uuids)
         # self._apply_collection_color(collection)
+
+    def _selected_uuids_from_mod_list(self, source: Any) -> list[str]:
+        if source is None or not hasattr(source, "selectedItems"):
+            return []
+
+        selected_uuids: list[str] = []
+        seen: set[str] = set()
+        for item in source.selectedItems():
+            item_data = item.data(Qt.ItemDataRole.UserRole)
+            uuid = item_data.get("uuid") if isinstance(item_data, dict) else None
+            if uuid is None and item_data is not None:
+                uuid = getattr(item_data, "uuid", None)
+            if not isinstance(uuid, str) or not uuid or uuid in seen:
+                continue
+            seen.add(uuid)
+            selected_uuids.append(uuid)
+        return selected_uuids
+
+    def _move_selected_uuids_to_active(self, selected_uuids: list[str]) -> None:
+        if not selected_uuids:
+            return
+
+        current_active = self.mods_panel.active_mods_list.uuids.copy()
+        current_inactive = self.mods_panel.inactive_mods_list.uuids.copy()
+
+        seen_active: set[str] = set()
+        active_uuids: list[str] = []
+        for uuid in current_active + selected_uuids:
+            if uuid in seen_active:
+                continue
+            seen_active.add(uuid)
+            active_uuids.append(uuid)
+
+        active_set = set(active_uuids)
+        seen_inactive: set[str] = set()
+        inactive_uuids: list[str] = []
+        for uuid in current_inactive:
+            if uuid in active_set or uuid in seen_inactive:
+                continue
+            seen_inactive.add(uuid)
+            inactive_uuids.append(uuid)
+
+        if active_uuids == current_active and inactive_uuids == current_inactive:
+            return
+        self._insert_data_into_lists(active_uuids, inactive_uuids)
+
+    def _move_selected_uuids_to_inactive(self, selected_uuids: list[str]) -> None:
+        if not selected_uuids:
+            return
+
+        current_active = self.mods_panel.active_mods_list.uuids.copy()
+        current_inactive = self.mods_panel.inactive_mods_list.uuids.copy()
+
+        seen_inactive: set[str] = set()
+        inactive_uuids: list[str] = []
+        for uuid in current_inactive + selected_uuids:
+            if uuid in seen_inactive:
+                continue
+            seen_inactive.add(uuid)
+            inactive_uuids.append(uuid)
+
+        inactive_set = set(inactive_uuids)
+        seen_active: set[str] = set()
+        active_uuids: list[str] = []
+        for uuid in current_active:
+            if uuid in inactive_set or uuid in seen_active:
+                continue
+            seen_active.add(uuid)
+            active_uuids.append(uuid)
+
+        if active_uuids == current_active and inactive_uuids == current_inactive:
+            return
+        self._insert_data_into_lists(active_uuids, inactive_uuids)
 
     def _handle_active_list_external_drop(self, event: QDropEvent) -> bool:
         source = event.source()
-        if source is not self.mods_panel.collections_panel.collections_list:
-            return False
-        if not hasattr(source, "get_selected_collection_id"):
-            return False
+        if source is self.mods_panel.collections_panel.collections_list:
+            if not hasattr(source, "get_selected_collection_id"):
+                return False
 
-        collection_id = source.get_selected_collection_id()
-        if not collection_id:
-            event.ignore()
+            collection_id = source.get_selected_collection_id()
+            if not collection_id:
+                event.ignore()
+                return True
+
+            self._activate_collection_mods(collection_id)
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return True
 
-        self._activate_collection_mods(collection_id)
-        event.setDropAction(Qt.DropAction.CopyAction)
-        event.accept()
-        return True
+        if source is self.mods_panel.collection_mods_list:
+            selected_uuids = self._selected_uuids_from_mod_list(source)
+            if not selected_uuids:
+                event.ignore()
+                return True
+
+            self._move_selected_uuids_to_active(selected_uuids)
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            return True
+
+        return False
 
     def _handle_inactive_list_external_drop(self, event: QDropEvent) -> bool:
         source = event.source()
         if source is self.mods_panel.collections_panel.collections_list:
             event.ignore()
             return True
+
+        if source is self.mods_panel.collection_mods_list:
+            selected_uuids = self._selected_uuids_from_mod_list(source)
+            if not selected_uuids:
+                event.ignore()
+                return True
+
+            self._move_selected_uuids_to_inactive(selected_uuids)
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            return True
+
         return False
 
     def _handle_collection_detail_external_drop(self, event: QDropEvent) -> bool:

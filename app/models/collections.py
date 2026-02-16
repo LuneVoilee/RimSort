@@ -15,6 +15,9 @@ from app.controllers.settings_controller import SettingsController
 
 DEFAULT_COLLECTION_COLOR = "#00007f"
 BACKGROUND_COLOR = "#101820"
+COLLECTION_COVER_TYPE_AUTO = "auto"
+COLLECTION_COVER_TYPE_FILE = "file"
+COLLECTION_COVER_TYPE_PACKAGE = "package"
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -33,12 +36,58 @@ def _normalize_collection_color(color: Any) -> str:
     return DEFAULT_COLLECTION_COLOR
 
 
+def _normalize_collection_cover_type(cover_type: Any) -> str:
+    if not isinstance(cover_type, str):
+        return COLLECTION_COVER_TYPE_AUTO
+    normalized = cover_type.strip().lower()
+    if normalized in (
+        COLLECTION_COVER_TYPE_AUTO,
+        COLLECTION_COVER_TYPE_FILE,
+        COLLECTION_COVER_TYPE_PACKAGE,
+    ):
+        return normalized
+    return COLLECTION_COVER_TYPE_AUTO
+
+
+def _normalize_collection_cover_settings(
+    cover_type: Any,
+    cover_image_path: Any,
+    cover_package_id: Any,
+    package_ids: list[str],
+) -> tuple[str, str, str]:
+    normalized_cover_type = _normalize_collection_cover_type(cover_type)
+    normalized_cover_image_path = (
+        cover_image_path.strip() if isinstance(cover_image_path, str) else ""
+    )
+    normalized_cover_package_id = (
+        _normalize_package_id(cover_package_id) if isinstance(cover_package_id, str) else ""
+    )
+
+    if normalized_cover_type == COLLECTION_COVER_TYPE_FILE:
+        if normalized_cover_image_path:
+            return normalized_cover_type, normalized_cover_image_path, ""
+        return COLLECTION_COVER_TYPE_AUTO, "", ""
+
+    if normalized_cover_type == COLLECTION_COVER_TYPE_PACKAGE:
+        if (
+            normalized_cover_package_id
+            and normalized_cover_package_id in set(package_ids)
+        ):
+            return normalized_cover_type, "", normalized_cover_package_id
+        return COLLECTION_COVER_TYPE_AUTO, "", ""
+
+    return COLLECTION_COVER_TYPE_AUTO, "", ""
+
+
 @dataclass
 class Collection:
     id: str
     name: str
     description: str = ""
     color: str = DEFAULT_COLLECTION_COLOR
+    cover_type: str = COLLECTION_COVER_TYPE_AUTO
+    cover_image_path: str = ""
+    cover_package_id: str = ""
     package_ids: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_utc_now_iso)
     updated_at: str = field(default_factory=_utc_now_iso)
@@ -72,11 +121,22 @@ class Collection:
                 if normalized and normalized not in seen:
                     seen.add(normalized)
                     package_ids.append(normalized)
+        cover_type, cover_image_path, cover_package_id = (
+            _normalize_collection_cover_settings(
+                raw.get("cover_type"),
+                raw.get("cover_image_path"),
+                raw.get("cover_package_id"),
+                package_ids,
+            )
+        )
         return Collection(
             id=str(raw.get("id", uuid4().hex)),
             name=str(raw.get("name", "Untitled Collection")).strip(),
             description=str(raw.get("description", "")).strip(),
             color=_normalize_collection_color(raw.get("color", DEFAULT_COLLECTION_COLOR)),
+            cover_type=cover_type,
+            cover_image_path=cover_image_path,
+            cover_package_id=cover_package_id,
             package_ids=package_ids,
             created_at=str(raw.get("created_at", _utc_now_iso())),
             updated_at=str(raw.get("updated_at", _utc_now_iso())),
@@ -157,6 +217,16 @@ class CollectionStore:
                 updated.name = updated.name.strip()
                 updated.description = updated.description.strip()
                 updated.color = _normalize_collection_color(updated.color)
+                (
+                    updated.cover_type,
+                    updated.cover_image_path,
+                    updated.cover_package_id,
+                ) = _normalize_collection_cover_settings(
+                    updated.cover_type,
+                    updated.cover_image_path,
+                    updated.cover_package_id,
+                    updated.package_ids,
+                )
                 updated.updated_at = _utc_now_iso()
                 collections[index] = updated
                 replaced = True
@@ -192,6 +262,16 @@ class CollectionStore:
                 if package_id not in seen:
                     seen.add(package_id)
                     collection.package_ids.append(package_id)
+            (
+                collection.cover_type,
+                collection.cover_image_path,
+                collection.cover_package_id,
+            ) = _normalize_collection_cover_settings(
+                collection.cover_type,
+                collection.cover_image_path,
+                collection.cover_package_id,
+                collection.package_ids,
+            )
             collection.updated_at = _utc_now_iso()
             if not self.save(collections):
                 return None
@@ -214,6 +294,16 @@ class CollectionStore:
                 for package_id in collection.package_ids
                 if package_id not in incoming
             ]
+            (
+                collection.cover_type,
+                collection.cover_image_path,
+                collection.cover_package_id,
+            ) = _normalize_collection_cover_settings(
+                collection.cover_type,
+                collection.cover_image_path,
+                collection.cover_package_id,
+                collection.package_ids,
+            )
             collection.updated_at = _utc_now_iso()
             if not self.save(collections):
                 return None
@@ -236,6 +326,16 @@ class CollectionStore:
             if collection.id != collection_id:
                 continue
             collection.package_ids = normalized
+            (
+                collection.cover_type,
+                collection.cover_image_path,
+                collection.cover_package_id,
+            ) = _normalize_collection_cover_settings(
+                collection.cover_type,
+                collection.cover_image_path,
+                collection.cover_package_id,
+                collection.package_ids,
+            )
             collection.updated_at = _utc_now_iso()
             if not self.save(collections):
                 return None

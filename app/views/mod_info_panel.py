@@ -486,6 +486,7 @@ class ModInfoPanel:
         resolved_count: int,
         missing_package_ids: list[str],
         updated_at: str,
+        cover_image_path: str | None = None,
     ) -> None:
         self._set_widget_styling(False)
         self._reset_mod_labels()
@@ -531,8 +532,15 @@ class ModInfoPanel:
             description if description else self.tr("No collection description."),
             False,
         )
+        pixmap = None
+        if cover_image_path and os.path.exists(cover_image_path):
+            candidate = QPixmap(cover_image_path)
+            if not candidate.isNull():
+                pixmap = candidate
+        if pixmap is None:
+            pixmap = QPixmap(self.rimsort_image_b_path)
         self.preview_picture.setPixmap(
-            QPixmap(self.rimsort_image_b_path).scaled(
+            pixmap.scaled(
                 self.preview_picture.size(), Qt.AspectRatioMode.KeepAspectRatio
             )
         )
