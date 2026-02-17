@@ -7,8 +7,6 @@ from shutil import copy2, copytree
 from traceback import format_exc
 from typing import Any, Callable, Dict, Optional, cast
 
-from loguru import logger
-from platformdirs import PlatformDirs
 from PySide6.QtCore import (
     QEvent,
     QItemSelection,
@@ -56,6 +54,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from loguru import logger
+from platformdirs import PlatformDirs
 from rapidfuzz import fuzz
 from sqlalchemy import text
 
@@ -2097,6 +2097,11 @@ class ModListWidget(QListWidget):
         mismatch = data["mismatch"]
         alternative = data["alternative"]
         uuid = data["uuid"]
+
+        if uuid not in self.metadata_manager.internal_local_metadata:
+            logger.warning(f"Metadata missing for UUID {uuid}, skipping widget creation to prevent crash.")
+            return
+
         mod_color = data["mod_color"]
         if uuid:
             widget = ModListItemInner(

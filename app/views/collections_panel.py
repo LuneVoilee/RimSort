@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QDropEvent
+from PySide6.QtGui import QDropEvent, QColor, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QGridLayout,
@@ -205,11 +205,19 @@ class CollectionsPanel(QWidget):
         selected_row = -1
 
         for index, collection in enumerate(collections):
+
             item = QListWidgetItem(
                 self.tr("{name} [{count}]").format(
                     name=collection.name, count=len(collection.package_ids)
                 )
             )
+
+            color = QColor(collection.color)
+            picture = QPixmap(20, 20)
+            picture.fill(color)
+            icon = QIcon(picture)
+            item.setIcon(icon)
+
             item.setData(Qt.ItemDataRole.UserRole, collection.id)
             self.collections_list.addItem(item)
             if collection.id == current_selection:
