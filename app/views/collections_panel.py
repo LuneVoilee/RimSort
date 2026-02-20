@@ -22,6 +22,7 @@ from app.models.collections import Collection
 class CollectionListWidget(QListWidget):
     collection_selected_signal = Signal(str)
     collection_open_requested_signal = Signal(str)
+    collection_reorder_signal = Signal(list)
     add_package_ids_to_collection_signal = Signal(str, list)
 
     def __init__(self) -> None:
@@ -58,25 +59,39 @@ class CollectionListWidget(QListWidget):
 
     def dropEvent(self, event: QDropEvent) -> None:
         source = event.source()
+        if source == self:
+            event.setDropAction(Qt.DropAction.MoveAction)
+            super().dropEvent(event)
+
+            item_list = list()
+            for i in range(self.count()):
+                item = self.item(i)
+                item_collection_id = self._collection_id_from_item(item)
+                if item_collection_id:
+                    item_list.append(item_collection_id)
+
+            self.collection_reorder_signal.emit(item_list)
+            return
+
         if source is None or not hasattr(source, "get_selected_package_ids"):
             event.ignore()
             return
+        else:
+            drop_position = event.position().toPoint()
+            target_item = self.itemAt(drop_position)
+            collection_id = self._collection_id_from_item(target_item)
+            if not collection_id:
+                event.ignore()
+                return
 
-        drop_position = event.position().toPoint()
-        target_item = self.itemAt(drop_position)
-        collection_id = self._collection_id_from_item(target_item)
-        if not collection_id:
-            event.ignore()
-            return
+            package_ids = source.get_selected_package_ids()
+            if not package_ids:
+                event.ignore()
+                return
 
-        package_ids = source.get_selected_package_ids()
-        if not package_ids:
-            event.ignore()
-            return
-
-        event.setDropAction(Qt.DropAction.CopyAction)
-        self.add_package_ids_to_collection_signal.emit(collection_id, package_ids)
-        event.accept()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            self.add_package_ids_to_collection_signal.emit(collection_id, package_ids)
+            event.accept()
 
 
 class CollectionsPanel(QWidget):
@@ -89,6 +104,7 @@ class CollectionsPanel(QWidget):
     add_package_ids_to_collection_signal = Signal(str, list)
     collection_selected_signal = Signal(str)
     collection_open_requested_signal = Signal(str)
+    collection_reorder_signal = Signal(list)
     back_to_collection_list_signal = Signal()
 
     def __init__(self) -> None:
@@ -181,6 +197,9 @@ class CollectionsPanel(QWidget):
         )
         self.collections_list.add_package_ids_to_collection_signal.connect(
             self.add_package_ids_to_collection_signal.emit
+        )
+        self.collections_list.collection_reorder_signal.connect(
+            self.collection_reorder_signal.emit
         )
 
     def attach_detail_widget(self, widget: QWidget) -> None:

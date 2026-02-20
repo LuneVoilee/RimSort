@@ -13,7 +13,6 @@ from typing import Any, Callable, Literal, Optional, cast, overload
 from urllib.parse import urlparse
 
 import requests
-from loguru import logger
 from PySide6.QtCore import (
     QEventLoop,
     QObject,
@@ -33,6 +32,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QWidget,
 )
+from loguru import logger
 
 import app.utils.constants as app_constants
 import app.utils.metadata as metadata
@@ -406,6 +406,8 @@ class MainContent(QObject):
             self.mods_panel.collections_panel.back_to_collection_list_signal.connect(
                 self._on_collection_back_requested
             )
+            self.mods_panel.collections_panel.collection_reorder_signal.connect(
+                self._on_collection_reordered)
 
             EventBus().use_this_instead_clicked.connect(self._use_this_instead_clicked)
 
@@ -813,6 +815,38 @@ class MainContent(QObject):
             render_unity_rt=self.settings_controller.settings.render_unity_rich_text,
         )
         self.mod_info_panel.show_user_mod_notes(item)
+
+    @Slot(list)
+    def _on_collection_reordered(self, new_order_ids: list[str]) -> None:
+
+        if not new_order_ids:
+            return
+
+        reordered_collections: list[Collection] = []
+        for collection_id in new_order_ids:
+            collection = self.collection_id_to_data.get(collection_id)
+            if collection is not None:
+                reordered_collections.append(collection)
+
+        if len(reordered_collections) != len(self.collections):
+            logger.error(
+                f"Reordered collections count mismatch! "
+                f"Expected {len(self.collections)}, got {len(reordered_collections)}. Aborting save."
+            )
+            return
+
+        saved = self.collection_store.save(reordered_collections)
+        if not saved:
+            logger.error("Failed to save reordered collections to disk.")
+            return
+
+        self.collections = reordered_collections
+
+        self.mods_panel.collections_panel.set_collections(
+            self.collections,
+            selected_collection_id=self.current_collection_id
+        )
+        logger.info("Collections successfully reordered and saved.")
 
     def _get_collection_by_id(self, collection_id: str) -> Collection | None:
         return self.collection_id_to_data.get(collection_id)
